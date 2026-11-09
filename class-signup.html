@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Request Training</title>
-  <script src="config.js?v=20260730-contact1" defer></script>
-  <script src="frontend-api.js" defer></script>
+  <script src="config.js?v=7" defer></script>
+  <script src="frontend-api.js?v=7" defer></script>
   <style>
     :root{--navy:#17324d;--navy-dark:#10263a;--green:#2f8f4e;--bg:#eef2f6;--card:#fff;--muted:#5b6570;--border:#d8e0e8}
     body{margin:0;font-family:Inter,system-ui,Arial;background:var(--bg);color:#1f2937}
@@ -32,7 +32,7 @@
 <body>
   <div class="top">
     <div class="wrap" style="padding:0">
-      <h1>Martinsville CDL Program</h1>
+      <h1>Blue Ridge ELDT</h1>
       <p>Request Training</p>
     </div>
   </div>
@@ -41,15 +41,12 @@
       <h2>Training Request</h2>
       <p class="small">Create your login and submit the information below. Your account will remain inactive until an administrator approves it.</p>
       <label>Choose a username<input id="username" autocomplete="username" required></label>
-      <label>Create a password<input id="password" type="password" autocomplete="new-password" required></label>
+      <label>Create a password<input id="password" minlength="12" type="password" autocomplete="new-password" required></label>
       <label>Confirm password<input id="confirmPassword" type="password" autocomplete="new-password" required></label>
-      <label>Full name as shown on license<input id="fullNameOnLicense" autocomplete="name" required></label>
-      <label>License number<input id="licenseNumber" required></label>
-      <label>License state<select id="licenseState" required><option value="">Select state</option></select></label>
+      <label>Full name<input id="fullNameOnLicense" autocomplete="name" required></label>
       <label>Email address or cell phone number <span class="small">(email preferred)</span><input id="preferredContact" type="text" autocomplete="email" placeholder="name@example.com or (276) 555-0123" required></label>
-      <fieldset><legend>Date of birth</legend><div class="date-grid"><label>Year<select id="dobYear" required><option value="">Year</option></select></label><label>Month<select id="dobMonth" required><option value="">Month</option></select></label><label>Day<select id="dobDay" required><option value="">Day</option></select></label></div></fieldset>
       <label>Requested training<select id="requestedClassId" required></select></label>
-      <button id="submitBtn" type="submit">Submit Request</button>
+      <button id="submitBtn" type="submit" disabled>Submit Request</button>
       <a class="btn" style="background:#17324d" href="index.html">Back to Login</a>
       <div id="msg" style="margin-top:14px"></div>
     </form>
@@ -64,23 +61,11 @@
   <script>
     document.addEventListener("DOMContentLoaded",()=>{
       const select=document.getElementById("requestedClassId");
-      const stateSelect=document.getElementById("licenseState");
       const msg=document.getElementById("msg");
       const contactInput=document.getElementById("preferredContact");
       const submitBtn=document.getElementById("submitBtn");
       const confirmationModal=document.getElementById("confirmationModal");
       const confirmationClose=document.getElementById("confirmationClose");
-      const LICENSE_STATES=[
-        ["AL","Alabama"],["AK","Alaska"],["AZ","Arizona"],["AR","Arkansas"],["CA","California"],["CO","Colorado"],["CT","Connecticut"],["DE","Delaware"],["FL","Florida"],["GA","Georgia"],["HI","Hawaii"],["ID","Idaho"],["IL","Illinois"],["IN","Indiana"],["IA","Iowa"],["KS","Kansas"],["KY","Kentucky"],["LA","Louisiana"],["ME","Maine"],["MD","Maryland"],["MA","Massachusetts"],["MI","Michigan"],["MN","Minnesota"],["MS","Mississippi"],["MO","Missouri"],["MT","Montana"],["NE","Nebraska"],["NV","Nevada"],["NH","New Hampshire"],["NJ","New Jersey"],["NM","New Mexico"],["NY","New York"],["NC","North Carolina"],["ND","North Dakota"],["OH","Ohio"],["OK","Oklahoma"],["OR","Oregon"],["PA","Pennsylvania"],["RI","Rhode Island"],["SC","South Carolina"],["SD","South Dakota"],["TN","Tennessee"],["TX","Texas"],["UT","Utah"],["VT","Vermont"],["VA","Virginia"],["WA","Washington"],["WV","West Virginia"],["WI","Wisconsin"],["WY","Wyoming"],["DC","District of Columbia"],["PR","Puerto Rico"],["VI","U.S. Virgin Islands"],["GU","Guam"],["AS","American Samoa"],["MP","Northern Mariana Islands"]
-      ];
-      function populateLicenseStates(){
-        LICENSE_STATES.forEach(([code,name])=>{
-          const option=document.createElement("option");
-          option.value=code;
-          option.textContent=`${name} (${code})`;
-          stateSelect.appendChild(option);
-        });
-      }
       function validContact(value){
         const contact=String(value||"").trim();
         const emailOk=/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contact);
@@ -98,55 +83,24 @@
       }
       function render(classes){
         select.innerHTML='<option value="">Select training</option>';
-        classes.filter(c=>String(c.active).toLowerCase()!=="false").forEach(c=>{
+        classes.filter(c=>c.active && [DEFAULT_CLASS_ID,"class-b-to-a"].includes(c.id)).forEach(c=>{
           const o=document.createElement("option");
           o.value=c.id;
           o.textContent=String(c.id)===String(DEFAULT_CLASS_ID)?"Initial Class B or A":c.title;
           select.appendChild(o);
         });
       }
-      function populateDays(){
-        const previous=document.getElementById("dobDay").value;
-        const year=Number(document.getElementById("dobYear").value)||2000;
-        const month=Number(document.getElementById("dobMonth").value);
-        const days=month?new Date(year,month,0).getDate():31;
-        const day=document.getElementById("dobDay");
-        day.innerHTML='<option value="">Day</option>';
-        for(let d=1;d<=days;d++){
-          const option=document.createElement("option");
-          option.value=String(d).padStart(2,"0");
-          option.textContent=d;
-          day.appendChild(option);
-        }
-        if(Number(previous)<=days)day.value=previous;
-      }
-      function populateDateOptions(){
-        const year=document.getElementById("dobYear");
-        const month=document.getElementById("dobMonth");
-        const currentYear=new Date().getFullYear();
-        for(let y=currentYear;y>=1900;y--){
-          const option=document.createElement("option");
-          option.value=String(y);
-          option.textContent=y;
-          year.appendChild(option);
-        }
-        ["January","February","March","April","May","June","July","August","September","October","November","December"].forEach((name,index)=>{
-          const option=document.createElement("option");
-          option.value=String(index+1).padStart(2,"0");
-          option.textContent=name;
-          month.appendChild(option);
-        });
-        year.addEventListener("change",populateDays);
-        month.addEventListener("change",populateDays);
-        populateDays();
-      }
       async function load(){
-        try{
-          const data=await apiListClasses(true);
-          render((data.classes&&data.classes.length)?data.classes:DEFAULT_CLASSES);
-        }catch(err){
-          console.error(err);
-          render(DEFAULT_CLASSES);
+        try {
+          const version = await secureBackend();
+          if (!version.intakeOpen) throw new Error("Online training requests are currently unavailable.");
+          const data = await apiGet("listClasses", { activeOnly: "true" });
+          if (!data.ok) throw new Error("Courses are temporarily unavailable.");
+          render(data.classes);
+          submitBtn.disabled = select.options.length < 2;
+        } catch (err) {
+          msg.className = "error";
+          msg.textContent = err.message || "Online training requests are currently unavailable.";
         }
       }
       document.getElementById("requestForm").addEventListener("submit",async(event)=>{
@@ -154,21 +108,15 @@
         const requestForm=event.currentTarget;
         if(!requestForm.reportValidity())return;
         const confirmPassword=document.getElementById("confirmPassword").value;
-        const dobYear=document.getElementById("dobYear").value;
-        const dobMonth=document.getElementById("dobMonth").value;
-        const dobDay=document.getElementById("dobDay").value;
         const preferredContact=contactInput.value.trim();
         const payload={
           username:document.getElementById("username").value.trim(),
           password:document.getElementById("password").value,
           fullNameOnLicense:document.getElementById("fullNameOnLicense").value.trim(),
-          licenseNumber:document.getElementById("licenseNumber").value.trim(),
-          licenseState:stateSelect.value,
           preferredContact,
-          dob:dobYear&&dobMonth&&dobDay?[dobYear,dobMonth,dobDay].join("-"):"",
           requestedClassId:select.value
         };
-        if(!payload.username||!payload.password||!confirmPassword||!payload.fullNameOnLicense||!payload.licenseNumber||!payload.licenseState||!payload.preferredContact||!payload.dob||!payload.requestedClassId){
+        if(!payload.username||!payload.password||!confirmPassword||!payload.fullNameOnLicense||!payload.preferredContact||!payload.requestedClassId){
           msg.className="error";
           msg.textContent="Please complete all required fields.";
           return;
@@ -207,8 +155,6 @@
       });
       contactInput.addEventListener("input",()=>contactInput.setCustomValidity(""));
       confirmationClose.addEventListener("click",hideConfirmation);
-      populateLicenseStates();
-      populateDateOptions();
       render(DEFAULT_CLASSES);
       load();
     });

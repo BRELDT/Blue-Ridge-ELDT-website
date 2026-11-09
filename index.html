@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>CDL Training Portal - Login</title>
 
-  <script src="config.js?v=20260730-contact1" defer></script>
-  <script src="frontend-api.js" defer></script>
+  <script src="config.js?v=7" defer></script>
+  <script src="frontend-api.js?v=7" defer></script>
 
   <style>
     :root{
@@ -162,7 +162,6 @@
       bottom:-90px;
       width: 420px;
       height: 420px;
-      background: url("logo.png") no-repeat center/contain;
       opacity:.05;
       pointer-events:none;
       z-index:-1;
@@ -511,13 +510,10 @@
     <div class="topbar-inner">
       <div class="topbar-left">
         <div class="brand-logo">
-          <img
-            src="logo.png"
-            alt="Martinsville CDL Program logo"
-            onerror="this.style.display='none'; this.parentElement.innerHTML='<div class=&quot;brand-fallback&quot;>M</div>';">
+          <div class="brand-fallback" aria-label="Blue Ridge ELDT">BR</div>
         </div>
         <div class="brand-text">
-          <h1>CDL Training Portal</h1>
+          <h1>Blue Ridge ELDT Training Portal</h1>
           <p>ELDT Compliance Training</p>
         </div>
       </div>
@@ -534,7 +530,7 @@
         <div class="accent"></div>
         <p>
           Access your assigned modules, track completion progress, and complete required
-          ELDT learning through the Martinsville CDL Program.
+          ELDT training through Blue Ridge ELDT.
         </p>
 
         <div class="hero-points">

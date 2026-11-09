@@ -4,8 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Training Admin</title>
-    <script src="config.js?v=20260730-contact1" defer></script>
-    <script src="frontend-api.js" defer></script>
+    <script src="config.js?v=7" defer></script>
+    <script src="frontend-api.js?v=7" defer></script>
     <style>
       :root {
         --navy: #17324d;
@@ -112,14 +112,14 @@
     </style>
   </head>
   <body>
-    <div class="top"><h1>Martinsville CDL Training Admin</h1></div>
+    <div class="top"><h1>Blue Ridge ELDT Training Admin</h1></div>
     <div class="wrap">
       <div class="card" id="loginCard">
         <h2>Admin Login</h2>
         <input id="adminUser" placeholder="Admin username" /><input
           id="adminPass"
           type="password"
-          placeholder="Password"
+          placeholder="Password (leave blank to keep existing)"
         /><button id="loginBtn">Login</button>
         <div id="loginMsg"></div>
       </div>
@@ -152,7 +152,6 @@
             <thead>
               <tr>
                 <th>Username</th>
-                <th>Password</th>
                 <th>License Info</th>
                 <th>Contact</th>
                 <th>Classes</th>
@@ -310,12 +309,12 @@
           pendingSupported = true;
         const $ = (id) => document.getElementById(id);
         function msg(id, t, ok = true) {
-          $(id).innerHTML =
-            `<div class="${ok ? "success" : "error"}">${t}</div>`;
+          $(id).className = ok ? "success" : "error";
+          $(id).textContent = t;
         }
         async function loadAll() {
           classes = (await apiListClasses(false)).classes || [];
-          const studentData = await apiGet("listStudents");
+          const studentData = await apiPost("listStudents");
           students = studentData.students || [];
           pendingSupported = Array.isArray(studentData.pendingStudents);
           pendingStudents = pendingSupported ? studentData.pendingStudents : [];
@@ -411,16 +410,9 @@
             .filter((s) => JSON.stringify(s).toLowerCase().includes(q))
             .forEach((s) => {
               const tr = document.createElement("tr");
-              tr.innerHTML = `<td>${s.username}</td><td><span class="pw hidden"></span><button class="secondary showpw">Show</button></td><td>${s.fullNameOnLicense || ""}<br>${s.licenseNumber || ""}</td><td class="contact"></td><td>${(s.classes || []).join(", ")}</td><td></td>`;
-              tr.querySelector(".pw").textContent = s.password || "";
-              tr.querySelector(".contact").textContent =
-                s.preferredContact || "Not provided";
-              tr.querySelector(".showpw").addEventListener("click", (e) => {
-                const pw = tr.querySelector(".pw");
-                pw.classList.toggle("hidden");
-                e.target.textContent = pw.classList.contains("hidden")
-                  ? "Show"
-                  : "Hide";
+              [s.username, s.fullNameOnLicense || "", s.preferredContact || "Not provided",
+                (s.classes || []).join(", "), ""].forEach((value) => {
+                tr.insertCell().textContent = value;
               });
               const edit = document.createElement("button");
               edit.textContent = "Edit";
@@ -438,7 +430,7 @@
           reviewingPending = isPending;
           $("studentUsername").value = s.username;
           $("studentUsername").disabled = true;
-          $("studentPassword").value = s.password || "";
+          $("studentPassword").value = "";
           $("studentName").value = s.fullNameOnLicense || "";
           $("studentLicense").value = s.licenseNumber || "";
           $("studentContact").value = s.preferredContact || "";
@@ -448,7 +440,7 @@
             ? "Review Pending Application"
             : "Add / Edit Student";
           $("saveStudent").textContent = isPending
-            ? "Add Profile"
+            ? "Approve and Assign"
             : "Save Student";
           if (isPending)
             $("studentFormTitle").scrollIntoView({
@@ -659,7 +651,8 @@
           loadAll();
         }
         $("loginBtn").addEventListener("click", async () => {
-          const data = await apiGet("adminLogin", {
+          try {
+          const data = await apiPost("adminLogin", {
             username: $("adminUser").value,
             password: $("adminPass").value,
           });
@@ -669,7 +662,11 @@
           }
           $("loginCard").classList.add("hidden");
           $("adminPanel").classList.remove("hidden");
-          loadAll();
+          $("adminPass").value = "";
+          await loadAll();
+          } catch (err) {
+            msg("loginMsg", err.message || "Unable to sign in", false);
+          }
         });
         document.querySelectorAll(".tabs button").forEach((b) =>
           b.addEventListener("click", () => {

@@ -12,18 +12,6 @@ const DEFAULT_CLASSES = [
   { id: "hazmat", title: "Hazmat Endorsement", description: "Hazmat endorsement training", passingScore: 80, requiredWatchPercent: 0.9, sortOrder: 6, active: true }
 ];
 
-const DEFAULT_MODULES = [
-  { id: "1", classId: DEFAULT_CLASS_ID, title: "Module 1 — Introduction", youtubeId: "-qXt8htJ9h4", sortOrder: 1, requiredWatchPercent: 0.9, active: true },
-  { id: "2", classId: DEFAULT_CLASS_ID, title: "Module 2 — Safety & Inspection", youtubeId: "RS4K5FCL988", sortOrder: 2, requiredWatchPercent: 0.9, active: true },
-  { id: "3", classId: DEFAULT_CLASS_ID, title: "Module 3 — Basic Operations", youtubeId: "TLeq0WikSmU", sortOrder: 3, requiredWatchPercent: 0.9, active: true },
-  { id: "4", classId: DEFAULT_CLASS_ID, title: "Module 4 — Advanced Driving", youtubeId: "cMML4tQdVvY", sortOrder: 4, requiredWatchPercent: 0.9, active: true },
-  { id: "8", classId: "hazmat", title: "Hazmat Module 1", youtubeId: "g8WOxP_PDJ8", sortOrder: 1, requiredWatchPercent: 0.9, active: true },
-  { id: "9", classId: "hazmat", title: "Hazmat Module 2", youtubeId: "CLIhc8MWFJ8", sortOrder: 2, requiredWatchPercent: 0.9, active: true },
-  { id: "10", classId: "class-b-to-a", title: "B to A Upgrade", youtubeId: "zeaHTafu4CY", sortOrder: 1, requiredWatchPercent: 0.9, active: true },
-  { id: "11", classId: "passenger", title: "Passenger and School Bus Module 1", youtubeId: "ocQxZ3-fk1M", sortOrder: 1, requiredWatchPercent: 0.9, active: true },
-  { id: "12", classId: "passenger", title: "Passenger and School Bus Module 2", youtubeId: "Z0V1nlzn2ks", sortOrder: 2, requiredWatchPercent: 0.9, active: true }
-];
-
 function qs(param) {
   return new URLSearchParams(location.search).get(param);
 }
@@ -59,13 +47,13 @@ function extractYouTubeId(value) {
   return text;
 }
 
-function authParams() {
-  const params = {};
-  const studentToken = localStorage.getItem(STUDENT_TOKEN_KEY);
-  const adminToken = sessionStorage.getItem(ADMIN_TOKEN_KEY);
-  if (studentToken) params.studentToken = studentToken;
-  if (adminToken) params.adminToken = adminToken;
-  return params;
+function authParams(action) {
+  if (["adminLogin", "validateLogin", "submitSignupRequest"].includes(action)) return {};
+  const student = ["getStatus", "getStudentDashboard", "beginModule", "logModule", "logTest"].includes(action) ||
+    (action === "listTestQuestions" && !location.pathname.endsWith("/admin.html"));
+  return student
+    ? { studentToken: localStorage.getItem(STUDENT_TOKEN_KEY) }
+    : { adminToken: sessionStorage.getItem(ADMIN_TOKEN_KEY) };
 }
 
 function isSessionExpiredResponse(data) {
@@ -86,8 +74,7 @@ async function apiGet(action, params = {}) {
   const url = new URL(APP_SCRIPT_URL);
   url.searchParams.set("action", action);
 
-  const merged = { ...authParams(), ...params };
-  Object.entries(merged).forEach(([key, value]) => {
+  Object.entries(params).forEach(([key, value]) => {
     if (value !== undefined && value !== null && value !== "") {
       url.searchParams.set(key, value);
     }
@@ -95,29 +82,40 @@ async function apiGet(action, params = {}) {
 
   const response = await fetch(url.toString(), { cache: "no-store" });
   const data = await response.json();
-
-  if (String(action).toLowerCase() === "adminlogin" && data && data.ok && data.token) {
-    sessionStorage.setItem(ADMIN_TOKEN_KEY, data.token);
-  }
-
-  handleSessionExpired(data);
   return data;
 }
 
+let verifiedBackend;
+async function secureBackend() {
+  if (!verifiedBackend) {
+    const version = await apiGet("getVersion");
+    if (version.version !== "blue-ridge-v7-secure") {
+      throw new Error("Blue Ridge ELDT online services are temporarily unavailable.");
+    }
+    verifiedBackend = version;
+  }
+  return verifiedBackend;
+}
+
 async function apiPost(action, body = {}) {
+  await secureBackend();
   const response = await fetch(APP_SCRIPT_URL, {
     method: "POST",
-    body: JSON.stringify({ action, ...authParams(), ...body })
+    redirect: "follow",
+    body: JSON.stringify({ ...body, ...authParams(action), action })
   });
 
   const data = await response.json();
+  if (action === "adminLogin" && data.ok && data.token) {
+    sessionStorage.setItem(ADMIN_TOKEN_KEY, data.token);
+  }
   handleSessionExpired(data);
   return data;
 }
 
 async function login(username, password) {
   try {
-    const data = await apiGet("validateLogin", { username, password });
+    const data = await apiPost("validateLogin", { username, password });
     if (data && data.ok) {
       localStorage.setItem(AUTH_STORAGE_KEY, data.username || username);
       if (data.token) localStorage.setItem(STUDENT_TOKEN_KEY, data.token);
@@ -134,7 +132,7 @@ async function login(username, password) {
 
 function requireAuth() {
   const username = localStorage.getItem(AUTH_STORAGE_KEY);
-  if (!username) {
+  if (!username || !localStorage.getItem(STUDENT_TOKEN_KEY)) {
     location.href = "index.html";
     return "";
   }
@@ -149,11 +147,11 @@ function logout() {
 }
 
 async function apiGetStatus(username, classId = DEFAULT_CLASS_ID) {
-  return apiGet("getStatus", { username, classId });
+  return apiPost("getStatus", { username, classId });
 }
 
 async function apiGetStudentDashboard(username) {
-  return apiGet("getStudentDashboard", { username });
+  return apiPost("getStudentDashboard", { username });
 }
 
 async function apiListClasses(activeOnly = false) {
@@ -171,28 +169,13 @@ async function apiListClasses(activeOnly = false) {
 }
 
 async function apiListModules(classId = "", activeOnly = false) {
-  try {
-    const data = await apiGet("listModules", {
-      classId,
-      activeOnly: activeOnly ? "true" : ""
-    });
-    if (data && data.ok && Array.isArray(data.modules)) return data;
-  } catch (err) {
-    console.warn(err);
-  }
-
-  return {
-    ok: true,
-    modules: DEFAULT_MODULES.filter(module =>
-      (!classId || module.classId === classId) &&
-      (!activeOnly || module.active !== false)
-    )
-  };
+  return apiPost("listModules", { classId, activeOnly: activeOnly ? "true" : "" });
 }
 
 async function apiListTestQuestions(classId = "", activeOnly = false) {
-  return apiGet("listTestQuestions", {
+  return apiPost("listTestQuestions", {
     classId,
+    username: localStorage.getItem(AUTH_STORAGE_KEY),
     activeOnly: activeOnly ? "true" : ""
   });
 }
@@ -201,8 +184,8 @@ async function apiLogModule(username, moduleId, classId = DEFAULT_CLASS_ID) {
   return apiPost("logModule", { username, moduleId, classId });
 }
 
-async function apiLogTest(username, complete, score, classId = DEFAULT_CLASS_ID) {
-  return apiPost("logTest", { username, complete, score, classId });
+async function apiLogTest(username, answers, classId = DEFAULT_CLASS_ID) {
+  return apiPost("logTest", { username, answers, classId });
 }
 
 async function apiSubmitSignupRequest(payload) {

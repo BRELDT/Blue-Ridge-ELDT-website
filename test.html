@@ -4,8 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>CDL Training - Test</title>
-    <script src="config.js?v=20260730-contact1" defer></script>
-    <script src="frontend-api.js" defer></script>
+    <script src="config.js?v=7" defer></script>
+    <script src="frontend-api.js?v=7" defer></script>
     <style>
       body {
         font-family: system-ui, Arial;
@@ -232,30 +232,24 @@
             return;
           }
 
-          let correct = 0;
-          QUESTIONS.forEach((q, i) => {
-            if (selected[i] === Number(q.correctIndex)) correct++;
-          });
-
-          const score = Math.round((correct / QUESTIONS.length) * 100);
-          const passed = score >= passingScore();
+          const answers = Object.fromEntries(QUESTIONS.map((q, i) => [q.id, selected[i]]));
 
           setSubmitting(true);
           result.className = "";
           result.textContent = "Saving score…";
 
           try {
-            const res = await apiLogTest(username, passed, score, classId);
+            const res = await apiLogTest(username, answers, classId);
             if (!res || !res.ok) {
               setSubmitting(false);
-              result.innerHTML = "<b>Error logging:</b> " + ((res && res.error) || "Unknown");
+              result.textContent = "Error saving test: " + ((res && res.error) || "Unknown");
               return;
             }
 
             status = res;
             setSubmitting(false);
-            if (res.testPassed) showPassed(res.testScore, score, correct);
-            else showReadyForRetake(res.testScore, score, correct);
+            if (res.testPassed) showPassed(res.testScore, res.attemptScore, res.correct);
+            else showReadyForRetake(res.testScore, res.attemptScore, res.correct);
           } catch (err) {
             setSubmitting(false);
             console.error(err);
