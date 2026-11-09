@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Martinsville CDL Program - Player</title>
-  <script src="config.js?v=20260730-contact1" defer></script>
-  <script src="frontend-api.js" defer></script>
+  <title>Blue Ridge ELDT - Player</title>
+  <script src="config.js?v=7" defer></script>
+  <script src="frontend-api.js?v=7" defer></script>
   <style>
     :root{
       --navy:#17324d;
@@ -140,7 +140,6 @@
       bottom:-50px;
       width:280px;
       height:280px;
-      background:url("logo.png") no-repeat center/contain;
       opacity:.05;
       pointer-events:none;
     }
@@ -353,13 +352,10 @@
     <div class="topbar-inner">
       <div class="brand-wrap">
         <div class="brand-logo">
-          <img
-            src="logo.png"
-            alt="Martinsville CDL Program logo"
-            onerror="this.style.display='none'; this.parentElement.innerHTML='<div class=&quot;brand-fallback&quot;>M</div>';">
+          <div class="brand-fallback" aria-label="Blue Ridge ELDT">BR</div>
         </div>
         <div class="brand-text">
-          <h1>Martinsville CDL Program</h1>
+          <h1>Blue Ridge ELDT</h1>
           <p>ELDT Compliance Training</p>
         </div>
       </div>
@@ -416,7 +412,7 @@
         <div class="info-list">
           <div class="info-item">
             <strong>Training Program</strong>
-            <span>Martinsville CDL Program</span>
+            <span>Blue Ridge ELDT</span>
           </div>
 
           <div class="info-item">
@@ -454,6 +450,9 @@
     const moduleId = qs("m") || "1";
 
     let duration = 0;
+    let viewingStarted = false;
+    let savingModule = false;
+    let nextSaveAt = 0;
     let maxWatched = 0;
     let validPlaySeconds = 0;
     let logged = false;
@@ -490,28 +489,50 @@
       return `<a class="continue-btn" href="test.html?classId=${encodeURIComponent(classId)}">Continue to Final Test</a>`;
     }
 
-    function completeModule(){ if(logged)return; logged=true; stopTimers(); document.getElementById("done").innerHTML="<b>Module complete.</b> Logging to Google Sheets…"; apiLogModule(username, selectedModule.id, classId).then(res=>{ if(!res.ok){ logged=false; startTimers(); document.getElementById("done").innerHTML="<b>Error logging completion:</b> "+(res.error||"Unknown"); return;} document.getElementById("statusText").textContent="Complete"; document.getElementById("done").innerHTML=`<b>Module complete and saved.</b><br>${nextStepHtml()}`; }).catch(err=>{logged=false;startTimers();console.error(err);document.getElementById("done").innerHTML="<b>Error logging completion.</b>";}); }
-    function maybeComplete(){ if(!logged&&completionReady())completeModule(); }
+    function completeModule(){ if(logged || savingModule || Date.now() < nextSaveAt)return; savingModule=true; document.getElementById("done").innerHTML="<b>Module complete.</b> Logging to Google Sheets…"; apiLogModule(username, selectedModule.id, classId).then(res=>{ if(!res.ok){ document.getElementById("done").textContent=res.error || "Unable to save lesson completion."; return;} logged=true; stopTimers(); document.getElementById("statusText").textContent="Complete"; document.getElementById("done").innerHTML=`<b>Module complete and saved.</b><br>${nextStepHtml()}`; }).catch(err=>{console.error(err);document.getElementById("done").innerHTML="<b>Error logging completion.</b>";}).finally(()=>{savingModule=false;nextSaveAt=Date.now()+5000;}); }
+    function maybeComplete(){ if(!logged && viewingStarted && completionReady())completeModule(); }
     function enforcePlaybackRate(){ try{ if(player && player.getPlaybackRate() !== 1) player.setPlaybackRate(1); }catch{} }
     function performSeekCorrection(t){ if(!player||correctingSeek)return; correctingSeek=true; suppressGuardUntil=Date.now()+1200; try{player.pauseVideo();}catch{} setTimeout(()=>{try{player.seekTo(Math.max(0,t),true);}catch{} setTimeout(()=>{try{if(!logged)player.playVideo();}catch{} correctingSeek=false;},180);},60); }
     function detectAndCorrectSkip(){ if(!player||!duration||logged||correctingSeek||Date.now()<suppressGuardUntil)return; let currentTime=0,state=-1; try{ currentTime=clamp(player.getCurrentTime() || 0, 0, duration); state=player.getPlayerState(); }catch{return;} if([YT.PlayerState.PLAYING,YT.PlayerState.PAUSED,YT.PlayerState.BUFFERING,YT.PlayerState.ENDED].includes(state)&&currentTime>maxWatched+SEEK_TOLERANCE_SECONDS){ performSeekCorrection(maxWatched); updateUI(); } }
-    function progressLoop(){ if(!player||!duration||logged)return; const now=Date.now(); let currentTime=0,state=-1; try{ currentTime=clamp(player.getCurrentTime() || 0, 0, duration); state=player.getPlayerState(); }catch{return;} enforcePlaybackRate(); if(state===YT.PlayerState.PLAYING){ const wallDelta=lastWallTime?Math.min((now-lastWallTime)/1000,MAX_INTERVAL_SECONDS):0; const playerDelta=lastPlayerTime?Math.max(0,currentTime-lastPlayerTime):0; if(isVisibleForCredit() && playerDelta <= MAX_INTERVAL_SECONDS + SEEK_TOLERANCE_SECONDS){ validPlaySeconds += wallDelta; maxWatched = Math.max(maxWatched,currentTime); } } lastWallTime=now; lastPlayerTime=currentTime; updateUI(); maybeComplete(); }
+    function progressLoop(){ if(!player||!duration||logged)return; const now=Date.now(); let currentTime=0,state=-1; try{ currentTime=clamp(player.getCurrentTime() || 0, 0, duration); state=player.getPlayerState(); }catch{return;} enforcePlaybackRate(); if(state===YT.PlayerState.PLAYING){ const wallDelta=lastWallTime?Math.min((now-lastWallTime)/1000,MAX_INTERVAL_SECONDS):0; const playerDelta=lastPlayerTime?Math.max(0,currentTime-lastPlayerTime):0; if(isVisibleForCredit() && playerDelta > 0 && playerDelta <= MAX_INTERVAL_SECONDS + SEEK_TOLERANCE_SECONDS){ validPlaySeconds += wallDelta; maxWatched = Math.max(maxWatched,currentTime); } } lastWallTime=now; lastPlayerTime=currentTime; updateUI(); maybeComplete(); }
     function initOrLoadPlayer(){ if(!selectedModule)return; if(player){ player.loadVideoById(selectedModule.youtubeId); return; } if(window.YT&&YT.Player){ player = new YT.Player("player",{videoId:selectedModule.youtubeId,playerVars:{rel:0,modestbranding:1,playsinline:1,controls:1,disablekb:1},events:{onReady:onPlayerReady,onStateChange:onPlayerStateChange,onPlaybackRateChange:enforcePlaybackRate}}); } }
     window.onYouTubeIframeAPIReady = initOrLoadPlayer;
     function onPlayerReady(){ playerReady=true; try{duration=player.getDuration()||0;player.setPlaybackRate(1);}catch{} if(selectedModule&&player&&player.loadVideoById) player.cueVideoById(selectedModule.youtubeId); updateUI(); startTimers(); }
-    function onPlayerStateChange(){ try{duration=player.getDuration()||duration;player.setPlaybackRate(1);}catch{} }
+    let startingViewing = false;
+    async function onPlayerStateChange(event){
+      try { duration=player.getDuration()||duration; player.setPlaybackRate(1); } catch {}
+      if (event.data !== YT.PlayerState.PLAYING || viewingStarted || startingViewing || logged) return;
+      startingViewing = true;
+      try {
+        const result = await apiPost("beginModule", { username, classId, moduleId });
+        if (!result.ok) throw new Error(result.error);
+        viewingStarted = true;
+      } catch (err) {
+        stopTimers();
+        player.pauseVideo();
+        document.getElementById("done").textContent = err.message || "Unable to start lesson.";
+      } finally {
+        startingViewing = false;
+        if (viewingStarted && !logged && !progressTick) startTimers();
+      }
+    }
 
     async function loadModuleData(){
       const dash=await apiGetStudentDashboard(username);
       if(!dash || !dash.ok) throw new Error((dash&&dash.error)||"Unable to load class");
       selectedClass=(dash.classes||[]).find(c=>c.id===classId)||null;
-      const mods=await apiListModules(classId,true);
-      classModules=(mods.modules||[]).slice().sort((a,b)=>Number(a.sortOrder||0)-Number(b.sortOrder||0));
+      if (!selectedClass) throw new Error("This course is not assigned to your account.");
+      classModules=(selectedClass.status.modules||[]).slice().sort((a,b)=>Number(a.sortOrder||0)-Number(b.sortOrder||0));
       selectedModule=classModules.find(m=>String(m.id)===String(moduleId));
       if(!selectedModule) throw new Error("Module not found");
       const displayNumber = Number(selectedModule.sortOrder || 0) || (classModules.findIndex(m=>String(m.id)===String(selectedModule.id)) + 1);
       document.getElementById("title").textContent=selectedModule.title;
       document.getElementById("modulePill").textContent=`${selectedClass?selectedClass.title:"Training"} · Module ${displayNumber}`;
+      if (selectedModule.complete) {
+        logged = true;
+        document.getElementById("statusText").textContent = "Complete";
+        document.getElementById("done").innerHTML = nextStepHtml();
+      }
       initOrLoadPlayer();
     }
 

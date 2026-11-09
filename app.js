@@ -2,7 +2,6 @@
 // Google Apps Script backend source
 // Current curriculum + secure sessions + best-score retention + request-level Sheets caching.
 
-const SPREADSHEET_ID = "1-aXjOP2bmhasz2E4KbyMg0ANNUrbEL7wJ41YWJVt0go";
 const STATUS_SHEET = "Status";
 const STUDENTS_SHEET = "Students";
 const ADMINS_SHEET = "Admins";
@@ -15,9 +14,63 @@ const TEST_RESULTS_SHEET = "TestResults";
 const SIGNUP_REQUESTS_SHEET = "SignupRequests";
 
 const DEFAULT_CLASS_ID = "class-a-b";
-const ADMIN_EMAIL = "Blueridgeeldt@gmail.com";
-const BACKEND_VERSION = "2026-09-12-blue-ridge-v6-email-alerts";
+const REQUEST_CLASS_IDS = ["class-a-b", "class-b-to-a"];
+const BACKEND_VERSION = "blue-ridge-v7-secure";
 const AUTH_TTL_SECONDS = 21600;
+
+function property_(name) {
+  return PropertiesService.getScriptProperties().getProperty(name);
+}
+
+function adminEmail_() {
+  return property_("BLUE_RIDGE_ADMIN_EMAIL");
+}
+
+function passwordHash_(value, legacy) {
+  const password = String(value || "");
+  if (!password || bcrypt.truncates(password) || (!legacy && password.length < 12)) {
+    throw new Error("Use at least 12 characters and no more than 72 UTF-8 bytes.");
+  }
+  bcrypt.setRandomFallback(function(length) {
+    return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256,
+      Utilities.getUuid() + Utilities.getUuid()).slice(0, length).map(function(byte) {
+      return byte & 255;
+    });
+  });
+  return bcrypt.hashSync(password, 12);
+}
+
+function isPasswordHash_(value) {
+  return /^\$2[aby]\$12\$[./A-Za-z0-9]{53}$/.test(String(value || ""));
+}
+
+function passwordMatches_(password, hash) {
+  return isPasswordHash_(hash) && String(password).length <= 256 &&
+    !bcrypt.truncates(String(password)) && bcrypt.compareSync(String(password), String(hash));
+}
+
+// Run manually in the Apps Script editor, after backup and retiring old versions.
+function migrateBlueRidgePasswords() {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    return withRequestCache_(function() {
+      let migrated = 0;
+      [ADMINS_SHEET, STUDENTS_SHEET].forEach(function(name) {
+        rowObjs_(name).filter(function(row) {
+          return row.obj.password && !isPasswordHash_(row.obj.password) && !bcrypt.truncates(String(row.obj.password));
+        }).slice(0, 25).forEach(function(row) {
+          setField_(sh_(name), row.row, "password", passwordHash_(row.obj.password, true));
+          migrated++;
+        });
+      });
+      SpreadsheetApp.flush();
+      console.log("Credentials migrated in this batch: " + migrated);
+    });
+  } finally {
+    lock.releaseLock();
+  }
+}
 
 const DEFAULT_CLASSES = [
   [DEFAULT_CLASS_ID, "Class A and B", "CDL Class A/B ELDT training", 80, 0.9, 1, true],
@@ -70,44 +123,11 @@ function doGet(e) {
       let result;
 
       switch (action) {
-        case "validatelogin":
-          result = validateLogin_(p.username, p.password);
-          break;
-        case "adminlogin":
-          result = adminLogin_(p.username, p.password);
-          break;
-        case "liststudents":
-          requireAdminToken_(p.adminToken);
-          result = listStudents_();
-          break;
         case "getversion":
-          result = { ok: true, version: BACKEND_VERSION };
-          break;
-        case "getstatus":
-          requireStudentToken_(p.studentToken, p.username);
-          result = getStatus_(p.username, p.classId);
-          break;
-        case "getstudentdashboard":
-          requireStudentToken_(p.studentToken, p.username);
-          result = getStudentDashboard_(p.username);
+          result = { ok: true, version: BACKEND_VERSION, intakeOpen: property_("BLUE_RIDGE_INTAKE_OPEN") === "true" && !!adminEmail_() };
           break;
         case "listclasses":
           result = listClasses_(p.activeOnly);
-          break;
-        case "listmodules":
-          result = listModules_(p.classId, p.activeOnly);
-          break;
-        case "listtestquestions":
-          requireAnyToken_(p.studentToken, p.adminToken);
-          result = listTestQuestions_(p.classId, p.activeOnly);
-          break;
-        case "setupsheets":
-          requireAdminToken_(p.adminToken);
-          result = setupSheets_();
-          break;
-        case "migrateexistingdatatoclassa":
-          requireAdminToken_(p.adminToken);
-          result = { ok: true, message: "Legacy Status data maps to the default Class A/B course at read time." };
           break;
         default:
           result = { ok: false, error: "Unknown action" };
@@ -127,6 +147,31 @@ function doPost(e) {
       let result;
 
       switch (action) {
+        case "validatelogin":
+          result = validateLogin_(data.username, data.password);
+          break;
+        case "adminlogin":
+          result = adminLogin_(data.username, data.password);
+          break;
+        case "liststudents":
+          requireAdminToken_(data.adminToken);
+          result = listStudents_();
+          break;
+        case "getstatus":
+          requireStudentToken_(data.studentToken, data.username);
+          result = getStatus_(data.username, data.classId);
+          break;
+        case "getstudentdashboard":
+          requireStudentToken_(data.studentToken, data.username);
+          result = getStudentDashboard_(data.username);
+          break;
+        case "listmodules":
+          requireAdminToken_(data.adminToken);
+          result = listModules_(data.classId, data.activeOnly);
+          break;
+        case "listtestquestions":
+          result = testQuestionsForSession_(data);
+          break;
         case "addstudent":
           requireAdminToken_(data.adminToken);
           result = addStudent_(data);
@@ -144,13 +189,18 @@ function doPost(e) {
           requireAdminToken_(data.adminToken);
           result = approveStudent_(data.username);
           break;
+        case "beginmodule":
+          requireStudentToken_(data.studentToken, data.username);
+          result = beginModule_(data);
+          break;
         case "logmodule":
           requireStudentToken_(data.studentToken, data.username);
+          requireModuleTime_(data);
           result = logModule_(data.username, data.classId, data.moduleId);
           break;
         case "logtest":
           requireStudentToken_(data.studentToken, data.username);
-          result = logTest_(data.username, data.classId, data.complete, data.score);
+          result = gradeTest_(data.username, data.classId, data.answers);
           break;
         case "saveclass":
           requireAdminToken_(data.adminToken);
@@ -194,13 +244,13 @@ function doPost(e) {
 
 function issueToken_(kind, username) {
   const token = Utilities.getUuid().replace(/-/g, "") + Utilities.getUuid().replace(/-/g, "");
-  CacheService.getScriptCache().put("auth:" + kind + ":" + token, String(username || ""), AUTH_TTL_SECONDS);
+  CacheService.getScriptCache().put("auth:v7:" + kind + ":" + token, String(username || ""), AUTH_TTL_SECONDS);
   return token;
 }
 
 function tokenUser_(kind, token) {
   if (!token) return "";
-  return CacheService.getScriptCache().get("auth:" + kind + ":" + String(token)) || "";
+  return CacheService.getScriptCache().get("auth:v7:" + kind + ":" + String(token)) || "";
 }
 
 function requireAdminToken_(token) {
@@ -215,24 +265,24 @@ function requireStudentToken_(token, username) {
       String(tokenUsername).trim().toLowerCase() !== String(username || "").trim().toLowerCase()) {
     throw new Error("Student session expired. Please log in again.");
   }
+  requireActiveStudent_(tokenUsername);
   return tokenUsername;
-}
-
-function requireAnyToken_(studentToken, adminToken) {
-  if (tokenUser_("admin", adminToken)) return true;
-  if (tokenUser_("student", studentToken)) return true;
-  throw new Error("Session expired. Please log in again.");
 }
 
 function ss_() {
   const c = cache_();
-  if (!c.ss) c.ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  if (!c.ss) {
+    const id = property_("BLUE_RIDGE_SPREADSHEET_ID");
+    if (!id) throw new Error("Blue Ridge database is not configured.");
+    c.ss = SpreadsheetApp.openById(id);
+  }
   return c.ss;
 }
 
 function sh_(name) {
   const c = cache_();
-  if (!c.sheets[name]) c.sheets[name] = ss_().getSheetByName(name) || ss_().insertSheet(name);
+  if (!c.sheets[name]) c.sheets[name] = ss_().getSheetByName(name);
+  if (!c.sheets[name]) throw new Error("Missing configured sheet: " + name);
   return c.sheets[name];
 }
 
@@ -248,7 +298,9 @@ function headers_(sheet) {
 }
 
 function ensureHeaders_(name, requiredHeaders) {
-  const sheet = sh_(name);
+  const c = cache_();
+  const sheet = c.sheets[name] || ss_().getSheetByName(name) || ss_().insertSheet(name);
+  c.sheets[name] = sheet;
   if (sheet.getLastRow() < 1) {
     sheet.getRange(1, 1, 1, requiredHeaders.length).setValues([requiredHeaders]);
     clearSheetCache_(name);
@@ -293,18 +345,22 @@ function appendObject_(sheetName, obj) {
   const headers = headers_(sheet);
   if (!headers.length) throw new Error("Missing headers for " + sheetName);
   sheet.appendRow(headers.map(function(header) {
-    return Object.prototype.hasOwnProperty.call(obj, header) ? obj[header] : "";
+    return Object.prototype.hasOwnProperty.call(obj, header) ? sheetValue_(obj[header]) : "";
   }));
   const newRow = sheet.getLastRow();
   clearSheetCache_(sheetName);
   return newRow;
 }
 
+function sheetValue_(value) {
+  return typeof value === "string" && /^\s*=/.test(value) ? "'" + value : value;
+}
+
 function setField_(sheet, row, header, value) {
   const headers = headers_(sheet);
   const index = headers.indexOf(header);
   if (index === -1) throw new Error("Missing header: " + header);
-  sheet.getRange(row, index + 1).setValue(value);
+  sheet.getRange(row, index + 1).setValue(sheetValue_(value));
   clearSheetCache_(sheet.getName());
 }
 
@@ -332,7 +388,7 @@ function complete_(value) {
 function normalizeWatchPercent_(value) {
   const n = Number(value);
   if (!n || isNaN(n)) return 0.9;
-  return n > 1 ? n / 100 : n;
+  return n > 0 && n <= 100 ? (n > 1 ? n / 100 : n) : 0.9;
 }
 
 function setupSheets_() {
@@ -480,11 +536,26 @@ function listTestQuestions_(classId, activeOnly) {
   return { ok: true, questions: questions };
 }
 
+function limitLoginAttempts_(kind, username) {
+  const key = "login:v7:" + kind + ":" + String(username || "").trim().toLowerCase().slice(0, 80);
+  const lock = LockService.getScriptLock();
+  lock.waitLock(5000);
+  try {
+    const cache = CacheService.getScriptCache();
+    const count = Number(cache.get(key) || 0);
+    if (count >= 8) throw new Error("Too many sign-in attempts. Try again in 10 minutes.");
+    cache.put(key, String(count + 1), 600);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 function validateLogin_(username, password) {
   if (!username || !password) return { ok: false, error: "Missing username or password" };
+  limitLoginAttempts_("student", username);
   const student = findStudent_(username);
   if (!student ||
-      String(student.obj.password || "") !== String(password) ||
+      !passwordMatches_(password, student.obj.password) ||
       !active_(student.obj.active)) {
     return { ok: false, error: "Invalid username or password" };
   }
@@ -497,10 +568,11 @@ function validateLogin_(username, password) {
 
 function adminLogin_(username, password) {
   if (!username || !password) return { ok: false, error: "Missing username or password" };
+  limitLoginAttempts_("admin", username);
   const key = String(username).trim().toLowerCase();
   const admin = rowObjs_(ADMINS_SHEET).find(function(row) {
     return String(row.obj.username || "").trim().toLowerCase() === key &&
-      String(row.obj.password || "") === String(password);
+      passwordMatches_(password, row.obj.password);
   });
   if (!admin) return { ok: false, error: "Invalid admin login" };
   return {
@@ -600,9 +672,9 @@ function getStudentDashboard_(username) {
 }
 
 function listStudents_() {
-  ensureHeaders_(STUDENTS_SHEET, ["username", "password", "updatedAt", "fullNameOnLicense", "licenseNumber", "dob", "active", "archivedAt", "preferredContact", "licenseState"]);
   const all = rowObjs_(STUDENTS_SHEET).map(function(row) {
     const obj = cloneObj_(row.obj);
+    delete obj.password;
     obj.classes = assignedClassIds_(obj.username);
     return obj;
   });
@@ -616,13 +688,23 @@ function listStudents_() {
   };
 }
 
+function requestedAssignments_(data) {
+  const classes = data.classes === undefined ? [DEFAULT_CLASS_ID] : data.classes;
+  if (!Array.isArray(classes) || !classes.length || classes.some(function(id) { return !id; })) {
+    throw new Error("Assign at least one course before saving the student.");
+  }
+  classes.forEach(function(id) { classById_(id, true); });
+  return classes;
+}
+
 function addStudent_(data) {
   if (!data.username || !data.password) return { ok: false, error: "Missing username or password" };
   if (findStudent_(data.username)) return { ok: false, error: "Username already exists or is archived" };
 
+  const classes = requestedAssignments_(data);
   appendObject_(STUDENTS_SHEET, {
     username: String(data.username).trim(),
-    password: data.password,
+    password: passwordHash_(data.password),
     updatedAt: new Date(),
     fullNameOnLicense: data.fullNameOnLicense || "",
     licenseNumber: data.licenseNumber || "",
@@ -632,7 +714,7 @@ function addStudent_(data) {
     preferredContact: data.preferredContact || "",
     licenseState: normalizeLicenseState_(data.licenseState)
   });
-  saveAssignments_(data.username, data.classes || [DEFAULT_CLASS_ID]);
+  saveAssignments_(data.username, classes);
   ensureStatusRow_(data.username);
   return { ok: true };
 }
@@ -640,19 +722,20 @@ function addStudent_(data) {
 function updateStudent_(data) {
   const student = findStudent_(data.username);
   if (!student) return { ok: false, error: "Student not found" };
-  if (!data.password) return { ok: false, error: "Missing password" };
+  if (student.obj.archivedAt) throw new Error("Archived profiles cannot be edited.");
+  const classes = requestedAssignments_(data);
 
   const sheet = sh_(STUDENTS_SHEET);
-  setField_(sheet, student.row, "password", data.password);
+  if (data.password) setField_(sheet, student.row, "password", passwordHash_(data.password));
   setField_(sheet, student.row, "updatedAt", new Date());
   setField_(sheet, student.row, "fullNameOnLicense", data.fullNameOnLicense || "");
   setField_(sheet, student.row, "licenseNumber", data.licenseNumber || "");
   setField_(sheet, student.row, "dob", data.dob || "");
   setField_(sheet, student.row, "preferredContact", data.preferredContact || "");
-  setField_(sheet, student.row, "licenseState", normalizeLicenseState_(data.licenseState));
+  if (data.licenseState !== undefined) setField_(sheet, student.row, "licenseState", normalizeLicenseState_(data.licenseState));
   setField_(sheet, student.row, "active", true);
   setField_(sheet, student.row, "archivedAt", "");
-  saveAssignments_(data.username, data.classes || [DEFAULT_CLASS_ID]);
+  saveAssignments_(data.username, classes);
   ensureStatusRow_(data.username);
   return { ok: true };
 }
@@ -683,19 +766,16 @@ function archiveStudent_(username) {
 function saveAssignments_(username, classIds) {
   const sheet = sh_(STUDENT_CLASSES_SHEET);
   const rows = assignmentRows_(username);
+  const unique = Array.from(new Set((classIds || []).filter(Boolean).map(String)));
+  unique.forEach(function(classId) { classById_(classId, false); });
   rows.forEach(function(row) {
-    setField_(sheet, row.row, "active", false);
+    const active = unique.includes(String(row.obj.classId));
+    setField_(sheet, row.row, "active", active);
     setField_(sheet, row.row, "updatedAt", new Date());
   });
-  const unique = {};
-  (classIds || []).forEach(function(classId) { if (classId) unique[String(classId)] = true; });
-  Object.keys(unique).forEach(function(classId) {
-    classById_(classId, false);
+  unique.forEach(function(classId) {
     const existing = rows.find(function(row) { return String(row.obj.classId) === classId; });
-    if (existing) {
-      setField_(sheet, existing.row, "active", true);
-      setField_(sheet, existing.row, "updatedAt", new Date());
-    } else {
+    if (!existing) {
       appendObject_(STUDENT_CLASSES_SHEET, { username: username, classId: classId, active: true, updatedAt: new Date() });
     }
   });
@@ -715,6 +795,34 @@ function activeModuleForClass_(classId, moduleId) {
   });
   if (!module) throw new Error("Module not found for this class");
   return module;
+}
+
+function moduleTiming_(data) {
+  const id = String(data.classId || DEFAULT_CLASS_ID);
+  const cls = requireAssignedClass_(data.username, id);
+  const module = activeModuleForClass_(id, data.moduleId);
+  const durations = JSON.parse(property_("BLUE_RIDGE_VIDEO_SECONDS") || "{}");
+  const duration = Number(durations[module.youtubeId]);
+  if (!Number.isFinite(duration) || duration <= 0 || duration > 21600) {
+    throw new Error("Viewing time has not been configured for this lesson.");
+  }
+  const seconds = duration * normalizeWatchPercent_(module.requiredWatchPercent || cls.requiredWatchPercent);
+  return { key: "lesson:v7:" + data.studentToken + ":" + module.youtubeId + ":" + id + ":" + module.id, seconds: seconds };
+}
+
+function beginModule_(data) {
+  const timing = moduleTiming_(data);
+  const cache = CacheService.getScriptCache();
+  if (!cache.get(timing.key)) cache.put(timing.key, String(Date.now()), AUTH_TTL_SECONDS);
+  return { ok: true };
+}
+
+function requireModuleTime_(data) {
+  const timing = moduleTiming_(data);
+  const started = Number(CacheService.getScriptCache().get(timing.key));
+  if (!started || Date.now() - started < timing.seconds * 1000) {
+    throw new Error("The minimum viewing time has not elapsed. Continue watching the lesson.");
+  }
 }
 
 function logModule_(username, classId, moduleId) {
@@ -750,6 +858,32 @@ function allModulesComplete_(modules) {
   return Array.isArray(modules) && modules.length > 0 && modules.every(function(module) { return !!module.complete; });
 }
 
+function testQuestionsForSession_(data) {
+  if (tokenUser_("admin", data.adminToken)) return listTestQuestions_(data.classId, data.activeOnly);
+  const username = requireStudentToken_(data.studentToken, data.username);
+  const status = getStatus_(username, data.classId);
+  if (!allModulesComplete_(status.modules)) throw new Error("Finish all lessons before opening the test.");
+  const result = listTestQuestions_(data.classId || DEFAULT_CLASS_ID, true);
+  result.questions = result.questions.map(function(q) {
+    delete q.correctIndex;
+    return q;
+  });
+  return result;
+}
+
+function gradeTest_(username, classId, answers) {
+  const id = String(classId || DEFAULT_CLASS_ID);
+  requireAssignedClass_(username, id);
+  const questions = listTestQuestions_(id, true).questions;
+  if (!answers || !questions.length || Object.keys(answers).length !== questions.length ||
+      !questions.every(function(q) { return Number.isInteger(answers[q.id]) && answers[q.id] >= 0 && answers[q.id] < 4; })) {
+    throw new Error("The test has changed or an answer is missing. Reload the test and try again.");
+  }
+  const correct = questions.filter(function(q) { return answers[q.id] === q.correctIndex; }).length;
+  const attemptScore = Math.floor(correct * 10000 / questions.length) / 100;
+  return Object.assign(logTest_(username, id, true, attemptScore), { attemptScore: attemptScore, correct: correct });
+}
+
 function logTest_(username, classId, complete, score) {
   const id = String(classId || DEFAULT_CLASS_ID);
   const cls = requireAssignedClass_(username, id);
@@ -774,7 +908,8 @@ function logTest_(username, classId, complete, score) {
   }
 
   if (passed && !status.testPassed) {
-    sendTestEmail_(username, id, cls, numericScore, new Date());
+    try { sendTestEmail_(username, id, cls, numericScore, new Date()); }
+    catch (err) { console.error("Completion email failed"); }
   }
   return getStatus_(username, id);
 }
@@ -845,16 +980,17 @@ function deactivateById_(sheetName, id) {
 }
 
 function submitSignupRequest_(data) {
-  ["username", "password", "fullNameOnLicense", "licenseNumber", "licenseState", "preferredContact", "dob", "requestedClassId"].forEach(function(key) {
-    if (!String(data[key] || "").trim()) throw new Error("Missing required field: " + key);
-  });
-
-  const username = String(data.username).trim();
-  const contact = String(data.preferredContact).trim();
-  const licenseState = normalizeLicenseState_(data.licenseState);
-  if (!validLicenseState_(licenseState)) throw new Error("Select a valid license state.");
-  if (!validPreferredContact_(contact)) throw new Error("Enter a valid email address or cell phone number.");
-
+  const recipient = adminEmail_();
+  if (property_("BLUE_RIDGE_INTAKE_OPEN") !== "true" || !recipient) {
+    throw new Error("Online training requests are currently unavailable.");
+  }
+  const username = String(data.username || "").trim();
+  const name = String(data.fullNameOnLicense || "").trim();
+  const contact = String(data.preferredContact || "").trim();
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{2,39}$/.test(username)) throw new Error("Choose a username of 3–40 letters, numbers, dots, underscores or hyphens.");
+  if (!name || name.length > 120 || /[\r\n]/.test(name)) throw new Error("Enter your full name.");
+  if (contact.length > 254 || !validPreferredContact_(contact)) throw new Error("Enter a valid email address or cell phone number.");
+  if (!REQUEST_CLASS_IDS.includes(data.requestedClassId)) throw new Error("Select an available training course.");
   const cls = classById_(data.requestedClassId, true);
   const lock = LockService.getScriptLock();
   lock.waitLock(10000);
@@ -863,56 +999,38 @@ function submitSignupRequest_(data) {
     clearSheetCache_(STUDENTS_SHEET);
     if (findStudent_(username)) throw new Error("That username is already in use. Please choose another.");
 
+    const password = passwordHash_(data.password);
     appendObject_(STUDENTS_SHEET, {
       username: username,
-      password: data.password,
+      password: password,
       updatedAt: new Date(),
-      fullNameOnLicense: data.fullNameOnLicense,
-      licenseNumber: data.licenseNumber,
-      dob: data.dob,
+      fullNameOnLicense: name,
       active: false,
-      archivedAt: "",
-      preferredContact: contact,
-      licenseState: licenseState
+      preferredContact: contact
     });
     saveAssignments_(username, [data.requestedClassId]);
     appendObject_(SIGNUP_REQUESTS_SHEET, {
       createdAt: new Date(),
-      fullNameOnLicense: data.fullNameOnLicense,
-      licenseNumber: data.licenseNumber,
-      dob: data.dob,
+      fullNameOnLicense: name,
       requestedClassId: data.requestedClassId,
       requestedClassTitle: cls.title || data.requestedClassId,
       status: "new",
-      preferredContact: contact,
-      licenseState: licenseState
+      preferredContact: contact
     });
+    SpreadsheetApp.flush();
   } finally {
     lock.releaseLock();
   }
 
-  if (ADMIN_EMAIL) {
+  try {
     MailApp.sendEmail({
-      to: ADMIN_EMAIL,
-      subject: "New Blue Ridge ELDT training request - " + String(data.fullNameOnLicense || username),
+      to: recipient,
+      subject: "New Blue Ridge ELDT training request",
       name: "Blue Ridge ELDT Website",
-      body: [
-        "A new training request was submitted.",
-        "",
-        "Submitted: " + formatEmailDate_(new Date()),
-        "Full name on license: " + String(data.fullNameOnLicense || ""),
-        "Username: " + String(username || ""),
-        "Date of birth: " + String(data.dob || ""),
-        "Preferred contact: " + String(contact || ""),
-        "License number: " + String(data.licenseNumber || ""),
-        "License state: " + String(licenseState || ""),
-        "Requested training: " + String(cls.title || data.requestedClassId || ""),
-        "Class ID: " + String(data.requestedClassId || ""),
-        "Status: Pending approval",
-        "",
-        "For security, the student's password is not included in this email."
-      ].join("\n")
+      body: "A new request is awaiting review in the Blue Ridge ELDT admin dashboard. Course: " + cls.title
     });
+  } catch (err) {
+    console.error("Training request notification failed");
   }
 
   return { ok: true, username: username, pendingApproval: true, backendVersion: BACKEND_VERSION };
@@ -920,12 +1038,6 @@ function submitSignupRequest_(data) {
 
 function normalizeLicenseState_(value) {
   return String(value || "").trim().toUpperCase();
-}
-
-function validLicenseState_(value) {
-  const code = normalizeLicenseState_(value);
-  const allowed = ["AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA","KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY","NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT","VA","WA","WV","WI","WY","DC","PR","VI","GU","AS","MP"];
-  return allowed.indexOf(code) !== -1;
 }
 
 function validPreferredContact_(value) {
@@ -943,24 +1055,18 @@ function formatEmailDate_(value) {
 }
 
 function sendTestEmail_(username, classId, cls, score, completedAt) {
-  if (!ADMIN_EMAIL) return;
+  const recipient = adminEmail_();
+  if (!recipient) return;
 
-  const student = findStudent_(username);
-  const info = student ? student.obj : {};
   MailApp.sendEmail({
-    to: ADMIN_EMAIL,
-    subject: "Blue Ridge ELDT training completed - " + String(info.fullNameOnLicense || username),
+    to: recipient,
+    subject: "Blue Ridge ELDT training completed",
     name: "Blue Ridge ELDT Website",
     body: [
       "A student completed their assigned training and passed the final test.",
       "",
       "Completed: " + formatEmailDate_(completedAt),
-      "Full name on license: " + String(info.fullNameOnLicense || ""),
-      "Username: " + String(info.username || username || ""),
-      "Date of birth: " + String(info.dob || ""),
-      "Preferred contact: " + String(info.preferredContact || ""),
-      "License number: " + String(info.licenseNumber || ""),
-      "License state: " + String(info.licenseState || ""),
+      "Username: " + String(username || ""),
       "Training completed: " + String((cls && cls.title) || classId || ""),
       "Class ID: " + String(classId || ""),
       "Final test score: " + String(score) + "%",

@@ -1,36 +1,28 @@
 # Blue Ridge Entry Level Driver Training Website
 
-This repository is the business copy of the CDL/ELDT training portal. It is intentionally separate from the City of Martinsville training website.
+GitHub Pages serves `blueridgeeldt.com` from `main`. The website uses its own Google Apps Script project and the existing **Blue Ridge ELDT website** workbook. Use a blank test workbook in a separate Apps Script project for acceptance testing.
 
-## Live site
-- Custom domain: `blueridgeeldt.com`
-- GitHub Pages branch: `main`
+## Secure deployment
 
-## Independent Google Sheet
-The business data workbook is:
-- **Blue Ridge ELDT website**
-- Spreadsheet ID: `1-aXjOP2bmhasz2E4KbyMg0ANNUrbEL7wJ41YWJVt0go`
+The browser expects Apps Script to report `blue-ridge-v7-secure` from `?action=getVersion`. The older production endpoint reported `2026-09-05-blue-ridge-v5-license-state` during the November 9, 2026 audit. The secure branch blocks credential and request submission to that version.
 
-The original workbook already contains the legacy `Status`, `Students`, and `Admins` tabs. The newer backend adds and uses these additional tabs:
-- `Classes`
-- `Modules`
-- `TestQuestions`
-- `StudentClasses`
-- `Progress`
-- `TestResults`
-- `SignupRequests`
+1. In a separate Apps Script V8 project, add `app.js` and `bcrypt.js` as server-side files. The bcryptjs 3.0.3 license is in `bcrypt.LICENSE`. The vendored UMD file guards its asynchronous timer lookup because Apps Script only uses the synchronous methods.
+2. Set script properties for that environment.
 
-## Apps Script
-`app.js` contains the Google Apps Script backend source used by the newer portal. The Apps Script deployment must point to the Blue Ridge spreadsheet above, not the city spreadsheet.
+   | Property | Value |
+   | --- | --- |
+   | `BLUE_RIDGE_SPREADSHEET_ID` | ID of the blank acceptance workbook. At cutover, use the existing business workbook only. |
+   | `BLUE_RIDGE_ADMIN_EMAIL` | A mailbox controlled by the tester. At cutover, use the business owner's notification mailbox. |
+   | `BLUE_RIDGE_INTAKE_OPEN` | Leave unset or `false` until the target environment is ready for test submissions or customer intake. |
+   | `BLUE_RIDGE_VIDEO_SECONDS` | JSON object mapping each assigned YouTube video ID to its verified duration in seconds, such as `{"example1234":1200}`. Enter measured values for both courses. |
 
-The prior Blue Ridge web-app deployment URL is stored in `config.js`. When the Apps Script code is updated, update the existing deployment if possible so that URL can stay the same.
+3. Run `setupSheets_` from the Apps Script editor against the blank test workbook and configure synthetic admins, course modules, and questions. Use the editor-only `migrateBlueRidgePasswords` command to hash a synthetic admin password in the test workbook. Deploy the test project as a web app and point a local copy of `config.js` to its URL.
+4. With synthetic records, verify each course's request and inbox notification, admin approval and assignment, student sign-in, successful embedded playback and save, locked final test before completion, failing and passing scores, and retained best score after reloading. Confirm that anonymous requests cannot read student data, lessons, or test answers. The browser's playback checks and the backend's elapsed-time check provide different safeguards. YouTube playback itself is observable only in the browser.
+5. Before production cutover, verify the business workbook ID and tabs, back it up with restricted access, and check the actual modules, question banks, and passing scores for both courses. Confirm authorization to offer online ELDT for the applicable courses. For a production credential migration, take the legacy deployments out of service before running `migrateBlueRidgePasswords`. The migration updates only password cells, skips existing bcrypt hashes, and processes up to 25 credentials per sheet per run. Repeat until there are no remaining eligible plaintext cells. Passwords exceeding bcrypt's 72-byte limit require a reset. Rotate credentials previously used with the legacy URL-based login and handle restricted backups and sheet history as containing legacy credentials.
+6. Publish the tested backend to the business deployment and verify its reported version. Merge the frontend only after acceptance and align its deployment URL if it changed. Keep customer intake closed until the endpoint, notification mailbox, workbook, and courses have been confirmed.
 
-## Default Blue Ridge Class A/B modules
-The seven video modules that existed in the Blue Ridge repository before the August 30, 2026 website copy were restored in `config.js`. They are also the intended seed list for the default Class A/B course.
+New training requests omit driver-license number and date of birth. Existing records and sheet headers remain compatible. If MailApp fails after the request is saved, the application preserves the pending request and records the failure in Apps Script execution logs. The admin dashboard remains the source for pending requests.
 
-## Branding
-The copied portal pages are rebranded at runtime from `config.js`, allowing the shared portal layout to remain maintainable without tying the business site to City of Martinsville branding. The public `resources.html` page is business-specific and does not expose the copied city study-guide files.
+## Local checks
 
-## Safety backup
-Before the September 4, 2026 separation work, the previous `main` state was preserved in:
-- `backup-pre-business-separation-2026-09-04`
+Run `node tests/workflow.cjs` from the repository root. It exercises the Apps Script request handlers with a synthetic in-memory workbook and mail sink. It does not contact Google or send messages.
